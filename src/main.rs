@@ -1,5 +1,8 @@
+mod utils;
+mod router;
+
 use std::{
-    collections::HashMap, io::{BufRead, BufReader, Read, Write}, net::{TcpListener, TcpStream}, sync::{Arc, Mutex, mpsc}, thread
+    collections::HashMap, io::{BufRead, BufReader, Write}, net::{TcpListener, TcpStream}, sync::{Arc, Mutex, mpsc::{self, Sender}}, thread
 };
 
 type ClientRegistry = Arc<Mutex<HashMap<usize, mpsc::Sender<String>>>>;
@@ -13,9 +16,29 @@ fn create_client_registry() -> ClientRegistry {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+/*
 fn generate_client_id(registry: &ClientRegistry) -> usize {
     let clients = registry.lock().unwrap();
     clients.len() + 1
+}
+
+fn handle_incoming_request(_req: Incoming) -> Result<(), Box<dyn Error>> {
+    Ok(())
+}
+*/
+
+fn cleanup_registry(reg_id: &usize, clients: &ClientRegistry) -> Option<mpsc::Sender<String>> {
+    let mut reg = clients.lock().unwrap();
+    reg.remove(reg_id)
+}
+
+fn add_sender(tx_id: usize, tx: Sender<String>, client: &ClientRegistry) -> Result<(), String> {
+    client
+        .lock()
+        .map_err(|_| "Error: Failed to lock registry.".to_string())?
+        .insert(tx_id, tx);
+    
+    Ok(())
 }
 
 fn main() {
@@ -23,35 +46,24 @@ fn main() {
     let clients = create_client_registry();
     let mut next_id = 1;
 
-
     for stream in listener.incoming() {
-        let client: TcpStream = match stream {
-            Ok(val) => val,
-            Err(e) => {
-                eprintln!("failed to connect: {}", e);
-                continue;
-            }
-        };
-
+        let client: TcpStream = stream.unwrap();
         let (own_tx, recv) = mpsc::channel::<String>();
         let client_id = next_id;
         next_id += 1;
-        
-        {
-            let mut registry = clients.lock().unwrap();
-            registry.insert(client_id, own_tx.clone());
-        }
+
+        let _ = add_sender(client_id, own_tx.clone(), &clients)
+            .inspect_err(|e| eprintln!("{e}"));
 
         let clients_c = Arc::clone(&clients);
         let writer_stream = client.try_clone().unwrap();
 
         thread::spawn(move || {
-            
             thread::spawn(move || {
                 let mut wr = writer_stream;
 
                 for message in recv {
-                    if writeln!(wr, "{message}").is_err() {
+                    if writeln!(wr, "> {message}").is_err() {
                         break;
                     }
                 }
@@ -62,9 +74,7 @@ fn main() {
             let mut buf_reader = BufReader::new(client);
 
             loop {
-
                 let mut line = String::new();
-
                 match buf_reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {},
@@ -78,51 +88,25 @@ fn main() {
                 if line.is_empty() {
                     continue;
                 }
-
-                let Some((target, sender_msg)) = line.split_once(' ') else {
-                    own_tx.send(format!("Invalid format {client_id}")).unwrap();
-                    continue;
-                };
-
                 
-                let target_id: usize = match target.parse::<usize>() {
-                    Ok(val) => val,
-                    Err(_) => {
-                        own_tx.send(format!("Invalid client id")).unwrap();
+                let (target_id, sender_msg) = match utils::parse_message(line) {
+                    Ok((a, b)) => (a,b),
+                    Err(err ) => {
+                        own_tx.send(format!("[Warn] {err}")).unwrap();
                         continue;
                     }
                 };
 
-                let target_tx = match clients_c.lock() {
-                    Ok(tgt) => tgt.get(&target_id).cloned(),
-                    Err(err) => {
-                        eprintln!("error: {err}");
-                        break;
-                    },
-                };
-
-                match target_tx { 
-                    Some(t) => {
-                        if t.send(format!("From {client_id}: {sender_msg}")).is_err() {
-                            own_tx.send(format!("Failed to send to id : {target_id}")).unwrap();
-                        }
-                    },
-                    None => {
-                        own_tx.send(format!("(None) Failed to send to id : {target_id}")).unwrap();
-                    }
+                if client_id == target_id {
+                    own_tx.send(format!("[Warn] cannot send to your id.")).unwrap();
+                    continue;
                 }
+
+                router::send_message(target_id, sender_msg.to_string(), &clients_c)
+                    .inspect_err(|e| own_tx.send(e.to_string()).unwrap()).unwrap();
             }
 
-            match clients_c.lock() {
-                Ok(mut registry) => {
-                    println!("registry {client_id} removed");
-                    registry.remove(&client_id);
-                },
-                Err(e) => {
-                    eprintln!("error removing client {client_id} : {e}");
-                }
-            }
-
+            cleanup_registry(&client_id, &clients_c);
             drop(own_tx);
         });
     }
