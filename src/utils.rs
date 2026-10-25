@@ -36,21 +36,19 @@ mod tests {
 
     #[test]
     fn test_parse_message_with_no_message() {
-        match parse_message("2") {
-            Err(err) => {      
-                assert_eq!(err, "Error: missing message");
-            },
-            Ok(_) => {}
-        };    
+        let msg1 = parse_message("2");
+        assert!(msg1.is_err());
+        assert_eq!(msg1.unwrap_err(), "Error: missing message");
+
+        let msg2 = parse_message("2 ");
+        assert!(msg2.is_err());
+        assert_eq!(msg2.unwrap_err(), "Error: missing message");
     }
 
     #[test]
     fn test_parse_message_with_invalid_target_id() {
-        match parse_message("SALAH test") {
-            Err(err) => {
-                assert_eq!(err, "Error: invalid client ID");
-            },
-            Ok(_) => {}
-        }
-    }   
+        let msg = parse_message("SALAH hello");
+        assert!(msg.is_err());
+        assert_eq!(msg.unwrap_err(), "Error: invalid client ID");
+    }
 }
