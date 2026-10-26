@@ -1,9 +1,14 @@
 mod utils;
 mod router;
+mod ui;
+mod client;
+mod registry;
 
 use std::{
-    collections::HashMap, io::{BufRead, BufReader, Write}, net::{TcpListener, TcpStream}, sync::{Arc, Mutex, mpsc::{self, Sender}}, thread
+    collections::HashMap, io::{BufReader, Write}, net::{TcpListener}, sync::{Arc, Mutex, mpsc::{self, Sender}}, thread
 };
+
+use crate::client::Client;
 
 type ClientRegistry = Arc<Mutex<HashMap<usize, mpsc::Sender<String>>>>;
 
@@ -42,72 +47,61 @@ fn add_sender(tx_id: usize, tx: Sender<String>, client: &ClientRegistry) -> Resu
 }
 
 fn main() {
-    let listener = create_listener("127.0.0.1:9999");
-    let clients = create_client_registry();
-    let mut next_id = 1;
+    let listener: TcpListener = create_listener("127.0.0.1:9999");
+    let clients: Arc<Mutex<HashMap<usize, Sender<String>>>> = create_client_registry();
+    let mut next_id: usize = 1;
 
     for stream in listener.incoming() {
-        let client: TcpStream = stream.unwrap();
-        let (own_tx, recv) = mpsc::channel::<String>();
-        let client_id = next_id;
+        let client_id: usize = next_id;
         next_id += 1;
-
-        let _ = add_sender(client_id, own_tx.clone(), &clients)
+        let mut client = Client::new(client_id, stream.unwrap());        
+        let _ = add_sender(client_id, client.sender.clone(), &clients)
             .inspect_err(|e| eprintln!("{e}"));
 
         let clients_c = Arc::clone(&clients);
-        let writer_stream = client.try_clone().unwrap();
+        let writer_stream = client.writer_stream();
+        let messages = client.messages.take().expect("s");
 
         thread::spawn(move || {
             thread::spawn(move || {
                 let mut wr = writer_stream;
 
-                for message in recv {
+                for message in messages {
                     if writeln!(wr, "> {message}").is_err() {
                         break;
                     }
                 }
             });
 
-            own_tx.send(format!("Your Client ID : {client_id}")).unwrap();
+            ui::display_welcome_message(&client);
 
-            let mut buf_reader = BufReader::new(client);
+            let mut buf_reader = BufReader::new(client.connection.try_clone().unwrap());
 
             loop {
-                let mut line = String::new();
-                match buf_reader.read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => {},
-                    Err(e) => {
-                        eprintln!("reader error {}", e);
-                        break;
-                    }
-                }
-
-                let line = line.trim();
+                let line = ui::read_message(&mut buf_reader);
                 if line.is_empty() {
                     continue;
                 }
                 
-                let (target_id, sender_msg) = match utils::parse_message(line) {
+                let (target_id, sender_msg) = match utils::parse_message(line.as_str()) {
                     Ok((a, b)) => (a,b),
                     Err(err ) => {
-                        own_tx.send(format!("[Warn] {err}")).unwrap();
+                        ui::display_error_message(&client, err);
                         continue;
                     }
                 };
 
                 if client_id == target_id {
-                    own_tx.send(format!("[Warn] cannot send to your id.")).unwrap();
+                    ui::display_error_message(&client, "cannot send to your id".to_string());
                     continue;
                 }
 
                 router::send_message(target_id, sender_msg.to_string(), &clients_c)
-                    .inspect_err(|e| own_tx.send(e.to_string()).unwrap()).unwrap();
+                    .inspect_err(|e| ui::display_error_message(&client, e.to_string())).unwrap();
             }
 
             cleanup_registry(&client_id, &clients_c);
-            drop(own_tx);
+            drop(client);
         });
     }
 }
