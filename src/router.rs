@@ -3,37 +3,36 @@ use crate::ClientRegistry;
 pub fn send_message(
     target_id: usize,
     message: String,
-    clients: &ClientRegistry
+    clients: &ClientRegistry,
 ) -> Result<(), String> {
-
     let target = clients
         .lock()
         .map_err(|_| "Error: Failed to lock registry.".to_string())?
         .get(&target_id)
         .cloned()
-        .ok_or_else(|| {
-            format!("Error: Failed to send message, target {target_id} not found.")
-        })?;
+        .ok_or_else(|| format!("Error: Failed to send message, target {target_id} not found."))?;
 
     target
         .send(message)
-        .map_err(|_| {
-            format!("Error: Failed to send message to {target_id}.")
-        })?;
-   
+        .map_err(|_| format!("Error: Failed to send message to {target_id}."))?;
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::{Arc, Mutex, mpsc}};
     use super::*;
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex, mpsc},
+    };
 
     #[test]
     fn test_send_message_to_valid_target_id() {
-        let message= String::from("some message");
-        let clients:Arc<Mutex<HashMap<usize, mpsc::Sender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
-        let (target,recv ) = mpsc::channel::<String>();
+        let message = String::from("some message");
+        let clients: Arc<Mutex<HashMap<usize, mpsc::Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (target, recv) = mpsc::channel::<String>();
 
         clients.lock().unwrap().insert(1, target);
 
@@ -47,19 +46,23 @@ mod tests {
     #[test]
     fn test_send_message_to_non_exists_id() {
         let message = String::from("hello");
-        let clients: Arc<Mutex<HashMap<usize, mpsc::Sender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let clients: Arc<Mutex<HashMap<usize, mpsc::Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         let result = send_message(1, message, &clients);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Error: Failed to send message, target 1 not found.")
-
+        assert_eq!(
+            result.unwrap_err(),
+            "Error: Failed to send message, target 1 not found."
+        )
     }
 
     #[test]
     fn test_send_message_to_disconnected_receiver() {
-        let message= String::from("some message");
-        let clients:Arc<Mutex<HashMap<usize, mpsc::Sender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
-        let (target, recv ) = mpsc::channel::<String>();
+        let message = String::from("some message");
+        let clients: Arc<Mutex<HashMap<usize, mpsc::Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let (target, recv) = mpsc::channel::<String>();
 
         clients.lock().unwrap().insert(1, target);
         drop(recv);
