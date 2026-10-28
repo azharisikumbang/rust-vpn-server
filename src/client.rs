@@ -1,20 +1,23 @@
-use std::{net::TcpStream, sync::mpsc::{self, Receiver, Sender}};
+use std::{
+    net::TcpStream,
+    sync::mpsc::{self, Receiver, Sender},
+};
 
 pub struct Client {
     pub id: usize,
     pub connection: TcpStream,
     pub sender: Sender<String>,
-    pub messages: Option<Receiver<String>>
+    pub messages: Option<Receiver<String>>,
 }
 
 impl Client {
     pub fn new(id: usize, c: TcpStream) -> Self {
         let chan = mpsc::channel();
-         Self {
+        Self {
             id: id,
             connection: c,
             sender: chan.0,
-            messages: Some(chan.1)
+            messages: Some(chan.1),
         }
     }
 
