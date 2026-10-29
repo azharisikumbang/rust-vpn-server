@@ -1,4 +1,5 @@
 use std::{
+    io::BufReader,
     net::TcpStream,
     sync::mpsc::{self, Receiver, Sender},
 };
@@ -23,5 +24,9 @@ impl Client {
 
     pub fn writer_stream(&self) -> TcpStream {
         self.connection.try_clone().unwrap()
+    }
+
+    pub fn create_buf_reader(&self) -> BufReader<TcpStream> {
+        BufReader::new(self.connection.try_clone().unwrap())
     }
 }

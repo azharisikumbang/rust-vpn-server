@@ -6,7 +6,7 @@ mod utils;
 
 use std::{
     collections::HashMap,
-    io::{BufReader, Write},
+    io::{BufRead, BufReader, Write},
     net::TcpListener,
     sync::{Arc, Mutex, mpsc},
     thread,
@@ -21,34 +21,65 @@ fn create_listener(addr: &str) -> TcpListener {
     TcpListener::bind(addr).unwrap()
 }
 
-// fn create_client_registry() -> ClientRegistry {
-//     Arc::new(Mutex::new(HashMap::new()))
-// }
+fn handle_client(mut client: Client, registry: &Registry) -> Result<(), String> {
+    if registry.add_client(&client).is_err() {
+        return Err("Error: Failed to add client to registry.".to_string());
+    }
 
-/*
-fn generate_client_id(registry: &ClientRegistry) -> usize {
-    let clients = registry.lock().unwrap();
-    clients.len() + 1
-}
+    let stream_writer = client.writer_stream();
+    let messages = client.messages.take().unwrap();
+    let registry_cl = registry.clone();
 
-fn handle_incoming_request(_req: Incoming) -> Result<(), Box<dyn Error>> {
+    thread::spawn(move || {
+        thread::spawn(move || {
+            let mut wr = stream_writer;
+
+            for msg in messages {
+                if writeln!(wr, "{msg}").is_err() {
+                    break;
+                }
+            }
+        });
+
+        ui::display_welcome_message(&client);
+
+        let mut buf_reader = client.create_buf_reader();
+        loop {
+            let mut msg = String::new();
+            buf_reader.read_line(&mut msg).unwrap();
+            msg = msg.trim().to_string();
+
+            if msg.is_empty() {
+                continue;
+            }
+
+            let (target_id, message) = match utils::parse_message(&msg) {
+                Ok((a, b)) => (a, b),
+                Err(e) => {
+                    ui::display_error_message(&client, e);
+                    continue;
+                }
+            };
+
+            if client.id == target_id {
+                ui::display_error_message(
+                    &client,
+                    "Warning: you cannot sending message to your own id".to_string(),
+                );
+                continue;
+            }
+
+            router::send_message(target_id, message.to_string(), &registry_cl.container)
+                .inspect_err(|e| ui::display_error_message(&client, e.to_string()))
+                .unwrap();
+        }
+    });
+
+    // registry.remove(client.id.clone());
+    // drop(client);
+
     Ok(())
 }
-*/
-
-// fn cleanup_registry(reg_id: &usize, clients: &ClientRegistry) -> Option<mpsc::Sender<String>> {
-//     let mut reg = clients.lock().unwrap();
-//     reg.remove(reg_id)
-// }
-
-// fn add_sender(tx_id: usize, tx: Sender<String>, client: &ClientRegistry) -> Result<(), String> {
-//     client
-//         .lock()
-//         .map_err(|_| "Error: Failed to lock registry.".to_string())?
-//         .insert(tx_id, tx);
-
-//     Ok(())
-// }
 
 fn main() {
     let listener: TcpListener = create_listener("127.0.0.1:9999");
@@ -59,55 +90,11 @@ fn main() {
         let client_id: usize = next_id;
         next_id += 1;
 
-        let mut client = Client::new(client_id, stream.unwrap());
-        registry
-            .add_client(&client)
-            .inspect_err(|err| ui::display_error_message(&client, err.to_string()))
-            .unwrap();
-
-        let registry_cl = registry.clone();
-        let writer_stream = client.writer_stream();
-        let messages = client.messages.take().expect("s");
-
-        thread::spawn(move || {
-            thread::spawn(move || {
-                let mut wr = writer_stream;
-
-                for message in messages {
-                    if writeln!(wr, "> {message}").is_err() {
-                        break;
-                    }
-                }
-            });
-
-            ui::display_welcome_message(&client);
-            let mut buf_reader = BufReader::new(client.connection.try_clone().unwrap());
-
-            loop {
-                let line = ui::read_message(&mut buf_reader);
-                if line.is_empty() {
-                    continue;
-                }
-
-                let (target_id, sender_msg) = match utils::parse_message(line.as_str()) {
-                    Ok((a, b)) => (a, b),
-                    Err(err) => {
-                        ui::display_error_message(&client, err);
-                        continue;
-                    }
-                };
-
-                if client_id == target_id {
-                    ui::display_error_message(&client, "cannot send to your id".to_string());
-                    continue;
-                }
-
-                router::send_message(target_id, sender_msg.to_string(), &registry_cl.container)
-                    .inspect_err(|e| ui::display_error_message(&client, e.to_string()))
-                    .unwrap();
-            }
-            // registry_cl.remove(&client);
-            // drop(registry_cl);
-        });
+        let client = Client::new(client_id, stream.unwrap());
+        if handle_client(client, &registry).is_err() {
+            // registry.remove(&client);
+            // drop(client);
+            break;
+        }
     }
 }
